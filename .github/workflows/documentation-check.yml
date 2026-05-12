@@ -1,0 +1,195 @@
+name: Documentation Check
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+jobs:
+  check-documentation:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Check if documentation folder exists
+      run: |
+        if [ ! -d "project_documentacion" ]; then
+          echo "ERROR: project_documentacion folder not found"
+          exit 1
+        fi
+        echo "✓ Documentation folder exists"
+
+    - name: Validate Markdown syntax
+      run: |
+        # Instalar markdownlint
+        npm install -g markdownlint-cli
+        
+        # Validar archivos Markdown
+        markdownlint project_documentacion/*.md docs/api/*.md 2>/dev/null || true
+        echo "✓ Markdown files checked"
+
+    - name: Check required documentation files
+      run: |
+        REQUIRED_FILES=(
+          "project_documentacion/README.md"
+          "project_documentacion/arquitectura.md"
+          "project_documentacion/mvp.md"
+          "project_documentacion/guias.md"
+          "project_documentacion/decisiones_arquitectura.md"
+          "docs/api/openapi.yaml"
+          ".env.example"
+        )
+        
+        for file in "${REQUIRED_FILES[@]}"; do
+          if [ ! -f "$file" ]; then
+            echo "ERROR: Required file not found: $file"
+            exit 1
+          fi
+        done
+        echo "✓ All required documentation files present"
+
+    - name: Check for broken internal links
+      run: |
+        echo "Checking for broken internal documentation links..."
+        
+        # Buscar referencias a archivos que no existen
+        cd project_documentacion
+        
+        # Buscar patterns como [texto](archivo.md)
+        found_broken=0
+        for file in *.md; do
+          # Extraer referencias a archivos .md
+          if grep -o '\[.*\]([^)]*\.md[^)]*)' "$file" | cut -d'(' -f2 | cut -d')' -f1 | while read link; do
+            # Si la referencia es un archivo relativo
+            if [[ $link == *.md ]]; then
+              # Obtener solo el nombre del archivo (sin path)
+              linkfile=$(basename "$link")
+              if [ ! -f "$linkfile" ]; then
+                echo "WARNING: Broken link in $file: $link"
+              fi
+            fi
+          done; do true; done
+        done
+        
+        echo "✓ Link check completed"
+
+    - name: Validate OpenAPI specification
+      run: |
+        if [ ! -f "docs/api/openapi.yaml" ]; then
+          echo "ERROR: OpenAPI spec not found"
+          exit 1
+        fi
+        
+        # Instalar validador
+        npm install -g @stoplight/spectral-cli
+        
+        # Validar (sin fallar si hay warnings)
+        spectral lint docs/api/openapi.yaml || true
+        
+        # Validar que es un YAML válido
+        python3 -c "import yaml; yaml.safe_load(open('docs/api/openapi.yaml'))" && echo "✓ OpenAPI spec is valid YAML" || exit 1
+
+    - name: Check for TODO/FIXME comments in docs
+      run: |
+        echo "Checking for unresolved TODO/FIXME in documentation..."
+        
+        if grep -r "TODO\|FIXME" project_documentacion/ docs/ 2>/dev/null; then
+          echo "⚠️ WARNING: Found TODO/FIXME comments in documentation"
+        else
+          echo "✓ No unresolved TODOs found"
+        fi
+
+    - name: Verify architectural decisions are documented
+      run: |
+        echo "Verifying architectural decisions..."
+        
+        if grep -q "Decisión 006\|DOCKER" project_documentacion/decisiones_arquitectura.md; then
+          echo "✓ Core architectural decisions documented"
+        else
+          echo "⚠️ WARNING: Some architectural decisions may not be documented"
+        fi
+
+    - name: Check that .env.example is up to date
+      run: |
+        echo "Verifying .env.example files..."
+        
+        required_env_files=(
+          ".env.example"
+          "frontend/web/.env.example"
+          "frontend/mobile/.env.example"
+        )
+        
+        for file in "${required_env_files[@]}"; do
+          if [ ! -f "$file" ]; then
+            echo "ERROR: Missing $file"
+            exit 1
+          fi
+          
+          # Verificar que no esté vacío
+          if [ ! -s "$file" ]; then
+            echo "ERROR: $file is empty"
+            exit 1
+          fi
+        done
+        echo "✓ All .env.example files present and valid"
+
+    - name: Validate README at root
+      run: |
+        if [ ! -f "README.md" ]; then
+          echo "ERROR: Root README.md not found"
+          exit 1
+        fi
+        
+        if grep -q "Gestión de Insectos" README.md; then
+          echo "✓ Root README.md contains project description"
+        else
+          echo "WARNING: Root README.md may need updating"
+        fi
+
+    - name: Generate documentation report
+      if: always()
+      run: |
+        cat > documentation-report.txt << EOF
+        === DOCUMENTATION CHECK REPORT ===
+        Date: $(date)
+        
+        Files checked:
+        EOF
+        find project_documentacion docs -name "*.md" -o -name "*.yaml" | wc -l >> documentation-report.txt
+        
+        echo "" >> documentation-report.txt
+        echo "=== SUMMARY ===" >> documentation-report.txt
+        echo "✓ Documentation validation completed" >> documentation-report.txt
+
+    - name: Upload documentation report
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: documentation-report
+        path: documentation-report.txt
+
+    - name: Comment on PR (success)
+      if: github.event_name == 'pull_request' && success()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: '✓ Documentation validation passed!'
+          })
+
+    - name: Comment on PR (failure)
+      if: github.event_name == 'pull_request' && failure()
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: '❌ Documentation validation failed. Please check the logs.'
+          })

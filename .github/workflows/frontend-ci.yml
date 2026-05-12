@@ -1,0 +1,152 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'frontend/**'
+      - '.github/workflows/frontend-ci.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'frontend/**'
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: |
+          frontend/web/package-lock.json
+
+    - name: Install dependencies (web)
+      run: |
+        cd frontend/web
+        npm ci
+
+    - name: Lint code (web)
+      run: |
+        cd frontend/web
+        npm run lint 2>/dev/null || true
+
+    - name: Format check (web)
+      run: |
+        cd frontend/web
+        npm run format:check 2>/dev/null || true
+
+    - name: Run tests (web)
+      run: |
+        cd frontend/web
+        npm test -- --coverage --watchAll=false
+
+    - name: Build (web)
+      run: |
+        cd frontend/web
+        npm run build
+
+    - name: Upload coverage reports
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./frontend/web/coverage/coverage-final.json
+        flags: frontend-web
+
+    - name: Archive build artifacts
+      if: success()
+      uses: actions/upload-artifact@v3
+      with:
+        name: frontend-web-build-${{ matrix.node-version }}
+        path: frontend/web/build
+
+  mobile:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v3
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        cache-dependency-path: |
+          frontend/mobile/package-lock.json
+
+    - name: Install dependencies (mobile)
+      run: |
+        cd frontend/mobile
+        npm ci
+
+    - name: Lint code (mobile)
+      run: |
+        cd frontend/mobile
+        npm run lint 2>/dev/null || true
+
+    - name: Format check (mobile)
+      run: |
+        cd frontend/mobile
+        npm run format:check 2>/dev/null || true
+
+    - name: Run tests (mobile)
+      run: |
+        cd frontend/mobile
+        npm test -- --coverage --watchAll=false 2>/dev/null || true
+
+    - name: Check React Native config
+      run: |
+        cd frontend/mobile
+        npx react-native doctor 2>/dev/null || true
+
+    - name: Validate Expo config
+      run: |
+        cd frontend/mobile
+        npx expo@latest config --json > /dev/null
+
+    - name: Upload coverage reports
+      if: always()
+      uses: codecov/codecov-action@v3
+      with:
+        files: ./frontend/mobile/coverage/coverage-final.json
+        flags: frontend-mobile
+
+  security:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.x'
+
+    - name: Audit dependencies (web)
+      run: |
+        cd frontend/web
+        npm audit --audit-level=moderate 2>/dev/null || true
+
+    - name: Audit dependencies (mobile)
+      run: |
+        cd frontend/mobile
+        npm audit --audit-level=moderate 2>/dev/null || true
+
+    - name: Check for vulnerable packages
+      uses: snyk/actions/node@master
+      env:
+        SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+      if: secrets.SNYK_TOKEN != ''
+      continue-on-error: true

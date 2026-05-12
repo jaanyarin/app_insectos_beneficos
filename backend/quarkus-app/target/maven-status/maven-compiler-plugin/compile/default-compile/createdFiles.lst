@@ -1,0 +1,8 @@
+pe\empresa\insectos\auth\dto\LoginResponse$UserDTO.class
+pe\empresa\insectos\auth\controller\AuthResource.class
+pe\empresa\insectos\DataVerificationResource.class
+pe\empresa\insectos\auth\dto\LoginRequest.class
+pe\empresa\insectos\auth\dto\LoginResponse.class
+pe\empresa\insectos\entities\Rol.class
+pe\empresa\insectos\GreetingResource.class
+pe\empresa\insectos\entities\Usuario.class

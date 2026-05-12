@@ -1,0 +1,124 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        java-version: ['17']
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: insectos_db_test
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+        ports:
+          - 3306:3306
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up JDK ${{ matrix.java-version }}
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ matrix.java-version }}
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Wait for MySQL
+      run: |
+        for i in {1..30}; do
+          if mysqladmin ping -h"localhost" -P"3306" -u"root" -p"root" --silent; then
+            echo "MySQL is up"
+            exit 0
+          fi
+          echo "Waiting for MySQL... ($i/30)"
+          sleep 1
+        done
+        exit 1
+
+    - name: Build with Maven
+      run: |
+        cd backend/quarkus-app
+        mvn -B clean package -DskipTests
+
+    - name: Run tests
+      run: |
+        cd backend/quarkus-app
+        mvn -B test
+
+    - name: Check code style
+      run: |
+        cd backend/quarkus-app
+        mvn -B checkstyle:check || true
+
+    - name: SonarQube analysis (opcional)
+      if: always()
+      run: |
+        cd backend/quarkus-app
+        # Descomentar cuando se configure SonarQube
+        # mvn sonar:sonar -Dsonar.projectKey=insectos-backend
+
+    - name: Archive test results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: surefire-reports
+        path: backend/quarkus-app/target/surefire-reports
+
+    - name: Publish test results
+      if: always()
+      uses: EnricoMi/publish-unit-test-result-action@v2
+      with:
+        files: 'backend/quarkus-app/target/surefire-reports/TEST-*.xml'
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Run OWASP Dependency Check
+      run: |
+        cd backend/quarkus-app
+        mvn org.owasp:dependency-check-maven:check || true
+
+    - name: Upload OWASP results
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: dependency-check-report
+        path: backend/quarkus-app/target/dependency-check-report.html
+
+  docker-build:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Build Docker image
+      run: |
+        docker build -f backend/Dockerfile -t insectos-backend:latest .
+
+    - name: Test Docker image
+      run: |
+        docker run --rm insectos-backend:latest --help || true

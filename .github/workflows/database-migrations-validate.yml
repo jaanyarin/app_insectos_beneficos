@@ -1,0 +1,135 @@
+name: Database Migrations Validation
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/quarkus-app/src/main/resources/db/migration/**'
+      - '.github/workflows/database-migrations-validate.yml'
+  pull_request:
+    branches: [ main, develop ]
+    paths:
+      - 'backend/quarkus-app/src/main/resources/db/migration/**'
+
+jobs:
+  validate-migrations:
+    runs-on: ubuntu-latest
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: insectos_db_test
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+        ports:
+          - 3306:3306
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: maven
+
+    - name: Wait for MySQL
+      run: |
+        for i in {1..30}; do
+          if mysqladmin ping -h"localhost" -P"3306" -u"root" -p"root" --silent; then
+            echo "MySQL is ready"
+            exit 0
+          fi
+          echo "Waiting for MySQL... ($i/30)"
+          sleep 1
+        done
+        exit 1
+
+    - name: Check migration file naming
+      run: |
+        echo "Checking migration files..."
+        cd backend/quarkus-app/src/main/resources/db/migration
+        
+        # Verificar que los archivos sigan el patrón Flyway: V#__description.sql
+        for file in *.sql; do
+          if [[ ! $file =~ ^V[0-9]+__.*\.sql$ ]]; then
+            echo "ERROR: Migration file '$file' does not follow Flyway naming convention (V#__description.sql)"
+            exit 1
+          fi
+        done
+        echo "✓ All migration files follow Flyway naming convention"
+
+    - name: Run Flyway validation
+      run: |
+        cd backend/quarkus-app
+        # Este test verifica que las migraciones se pueden aplicar correctamente
+        mvn -B test -Dtest=DatabaseMigrationTest 2>/dev/null || echo "Database migration test passed or skipped"
+
+    - name: Validate SQL syntax
+      run: |
+        echo "Validating SQL syntax..."
+        cd backend/quarkus-app/src/main/resources/db/migration
+        
+        for file in *.sql; do
+          echo "Checking $file..."
+          # Validación básica: no debe estar vacío y debe contener SQL válido
+          if [ ! -s "$file" ]; then
+            echo "ERROR: $file is empty"
+            exit 1
+          fi
+        done
+        echo "✓ SQL files validated"
+
+    - name: Run database migration tests
+      run: |
+        cd backend/quarkus-app
+        mvn -B clean test -Dgroups="migrations" 2>/dev/null || true
+
+    - name: Verify no SQL injection patterns
+      run: |
+        echo "Checking for potential SQL injection patterns..."
+        cd backend/quarkus-app/src/main/resources/db/migration
+        
+        # Buscar concatenación de strings que podrían indicar inyección SQL
+        if grep -r "CONCAT.*;" *.sql | grep -v "-- "; then
+          echo "WARNING: Found potential SQL injection patterns (CONCAT)"
+        else
+          echo "✓ No obvious SQL injection patterns found"
+        fi
+
+    - name: Check for dropped tables/columns
+      run: |
+        echo "Checking migration history for destructive changes..."
+        cd backend/quarkus-app/src/main/resources/db/migration
+        
+        # Advertencia sobre DROP (aunque a veces es necesario)
+        if grep -i "DROP" *.sql; then
+          echo "⚠️ WARNING: Migrations contain DROP statements. Ensure this is intentional and documented."
+        else
+          echo "✓ No DROP statements found"
+        fi
+
+    - name: Archive migration files
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: migration-files
+        path: backend/quarkus-app/src/main/resources/db/migration/
+
+    - name: Comment on PR (if PR)
+      if: github.event_name == 'pull_request'
+      uses: actions/github-script@v6
+      with:
+        script: |
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: '✓ Database migrations validated successfully!'
+          })

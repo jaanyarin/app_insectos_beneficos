@@ -1,0 +1,814 @@
+openapi: 3.0.3
+info:
+  title: Gestión de Insectos Benéficos - API REST
+  description: |
+    API REST para el sistema de **Gestión de Insectos Benéficos y Evaluación de Nematodos**.
+    
+    Esta es la **única fuente de verdad** del contrato entre Frontend y Backend.
+    
+    Todos los endpoints requieren autenticación mediante JWT.
+  version: 1.0.0
+  contact:
+    name: Equipo de Desarrollo
+    email: desarrollo@insectosbeneficos.local
+  license:
+    name: Propietario
+
+servers:
+  - url: http://localhost:8080/api
+    description: Desarrollo Local
+  - url: https://api-qa.insectosbeneficos.com/api
+    description: QA
+  - url: https://api.insectosbeneficos.com/api
+    description: Producción
+
+tags:
+  - name: Autenticación
+    description: Endpoints de login y renovación de tokens
+  - name: Solicitudes
+    description: CRUD de solicitudes de insectos benéficos
+  - name: Inventario
+    description: Gestión de stock de insectos
+  - name: Auditoría
+    description: Historial de acciones auditadas (solo lectura)
+  - name: Usuarios
+    description: Gestión de usuarios y roles
+
+paths:
+  # ========================================
+  # AUTENTICACIÓN
+  # ========================================
+  /auth/login:
+    post:
+      tags:
+        - Autenticación
+      summary: Login con credenciales locales
+      description: |
+        Autentica un usuario local y retorna un JWT.
+        
+        Este endpoint **no requiere autenticación previa**.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - username
+                - password
+              properties:
+                username:
+                  type: string
+                  example: usuario@local.com
+                password:
+                  type: string
+                  format: password
+                  example: MiContraseña123!
+      responses:
+        '200':
+          description: Login exitoso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                    description: JWT para usar en requests posteriores
+                    example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+                  token_type:
+                    type: string
+                    example: Bearer
+                  expires_in:
+                    type: integer
+                    description: Segundos hasta expiración
+                    example: 86400
+                  user:
+                    $ref: '#/components/schemas/Usuario'
+        '401':
+          description: Credenciales inválidas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: Request inválido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/login/microsoft:
+    post:
+      tags:
+        - Autenticación
+      summary: Login con Microsoft Entra ID
+      description: |
+        Intercambia un token de Microsoft por un JWT propio del sistema.
+        
+        El cliente primero autentica con Microsoft, luego envía el token aquí.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - access_token
+              properties:
+                access_token:
+                  type: string
+                  description: Token retornado por Microsoft Entra ID
+                  example: eyJhbGciOiJSUzI1NiIsImtpZCI6IjEx...
+      responses:
+        '200':
+          description: Login exitoso
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  token_type:
+                    type: string
+                    example: Bearer
+                  expires_in:
+                    type: integer
+                  user:
+                    $ref: '#/components/schemas/Usuario'
+        '401':
+          description: Token de Microsoft inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      tags:
+        - Autenticación
+      summary: Renovar JWT
+      description: Obtiene un nuevo JWT cuando el actual está próximo a expirar.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Token renovado
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  access_token:
+                    type: string
+                  expires_in:
+                    type: integer
+        '401':
+          description: JWT inválido o expirado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  # ========================================
+  # SOLICITUDES
+  # ========================================
+  /solicitudes:
+    get:
+      tags:
+        - Solicitudes
+      summary: Listar solicitudes
+      description: |
+        Retorna solicitudes según el rol del usuario:
+        - **Usuario normal**: sus propias solicitudes
+        - **Administrador**: todas las solicitudes
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: estado
+          in: query
+          description: Filtrar por estado
+          schema:
+            type: string
+            enum: [PENDIENTE, APROBADO, ENTREGADO, RECHAZADO, RECIBIDO]
+        - name: page
+          in: query
+          description: Número de página (0-indexed)
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          description: Cantidad de registros por página
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: Lista de solicitudes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Solicitud'
+                  totalElements:
+                    type: integer
+                  totalPages:
+                    type: integer
+                  currentPage:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+    post:
+      tags:
+        - Solicitudes
+      summary: Crear nueva solicitud
+      description: |
+        Crea una solicitud de insectos benéficos. El solicitante es siempre el usuario autenticado.
+        
+        La solicitud se crea en estado **PENDIENTE**.
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - tipoInsecto
+                - cantidad
+              properties:
+                tipoInsecto:
+                  type: string
+                  description: Tipo de insecto solicitado
+                  enum: [Coccinelida, Chrysopidae, Braconidae, Trichogrammatidae]
+                  example: Coccinelida
+                cantidad:
+                  type: integer
+                  description: Cantidad de unidades
+                  example: 500
+                observaciones:
+                  type: string
+                  description: Observaciones adicionales
+                  example: Para control de pulgón en cultivo de tomate
+      responses:
+        '201':
+          description: Solicitud creada exitosamente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Solicitud'
+        '400':
+          description: Datos inválidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /solicitudes/{id}:
+    get:
+      tags:
+        - Solicitudes
+      summary: Obtener detalles de solicitud
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Detalles de la solicitud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudDetalle'
+        '404':
+          description: Solicitud no encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+    patch:
+      tags:
+        - Solicitudes
+      summary: Actualizar estado de solicitud
+      description: |
+        Permite cambiar el estado de una solicitud.
+        
+        Solo **administradores** pueden cambiar estados.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - nuevoEstado
+              properties:
+                nuevoEstado:
+                  type: string
+                  enum: [APROBADO, RECHAZADO, ENTREGADO, RECIBIDO]
+                  example: APROBADO
+                motivo:
+                  type: string
+                  description: Motivo del cambio (opcional)
+                  example: Aprobado por gerente
+      responses:
+        '200':
+          description: Solicitud actualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Solicitud'
+        '403':
+          description: No tienes permisos para actualizar esta solicitud
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Solicitud no encontrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /solicitudes/{id}/confirmar-recepcion:
+    post:
+      tags:
+        - Solicitudes
+      summary: Confirmar recepción de solicitud
+      description: |
+        Marca una solicitud como recibida por el solicitante.
+        
+        Solo el **dueño de la solicitud** puede hacer esto.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - cantidadRecibida
+              properties:
+                cantidadRecibida:
+                  type: integer
+                  example: 500
+                observaciones:
+                  type: string
+                  example: Todo correcto
+      responses:
+        '200':
+          description: Recepción confirmada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Solicitud'
+        '403':
+          description: No puedes confirmar una solicitud que no es tuya
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '400':
+          description: La solicitud no puede ser confirmada en este estado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ========================================
+  # INVENTARIO
+  # ========================================
+  /inventario:
+    get:
+      tags:
+        - Inventario
+      summary: Obtener stock de insectos
+      description: |
+        Retorna el stock disponible de cada tipo de insecto.
+        
+        - **Usuarios normales**: ven solo stock disponible
+        - **Administradores**: ven también movimientos detallados
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Stock actual
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StockItem'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /inventario/{tipoInsecto}:
+    get:
+      tags:
+        - Inventario
+      summary: Obtener stock específico
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: tipoInsecto
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [Coccinelida, Chrysopidae, Braconidae, Trichogrammatidae]
+      responses:
+        '200':
+          description: Stock del tipo específico
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockItem'
+        '404':
+          description: Tipo de insecto no encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ========================================
+  # AUDITORÍA
+  # ========================================
+  /auditoria:
+    get:
+      tags:
+        - Auditoría
+      summary: Obtener historial de auditoría
+      description: |
+        Retorna un historial de todas las acciones auditadas.
+        
+        Solo **administradores** pueden acceder.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: usuario_id
+          in: query
+          schema:
+            type: integer
+        - name: tipo_accion
+          in: query
+          schema:
+            type: string
+        - name: fecha_desde
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: fecha_hasta
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+        - name: size
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: Historial de auditoría
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditoriaLog'
+                  totalElements:
+                    type: integer
+                  totalPages:
+                    type: integer
+        '403':
+          description: No tienes permisos para ver auditoría
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  # ========================================
+  # USUARIOS
+  # ========================================
+  /usuarios/me:
+    get:
+      tags:
+        - Usuarios
+      summary: Obtener perfil del usuario actual
+      description: Retorna los datos del usuario autenticado.
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Datos del usuario
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Usuario'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+  /usuarios:
+    get:
+      tags:
+        - Usuarios
+      summary: Listar usuarios
+      description: |
+        Retorna lista de usuarios.
+        
+        Solo **administradores** pueden acceder.
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: rol
+          in: query
+          schema:
+            type: string
+            enum: [USUARIO, ADMIN, GERENTE]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Lista de usuarios
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  content:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Usuario'
+                  totalElements:
+                    type: integer
+        '403':
+          description: No tienes permisos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/UnauthorizedError'
+
+components:
+  schemas:
+    # ==================== ESTRUCTURAS ====================
+    Usuario:
+      type: object
+      required:
+        - id
+        - email
+        - nombre
+        - rol
+      properties:
+        id:
+          type: integer
+          example: 1
+        email:
+          type: string
+          format: email
+          example: usuario@empresa.com
+        nombre:
+          type: string
+          example: Juan Pérez
+        rol:
+          type: string
+          enum: [USUARIO, ADMIN, GERENTE]
+          example: USUARIO
+        tipoUsuario:
+          type: string
+          enum: [LOCAL, MICROSOFT]
+          example: MICROSOFT
+        activo:
+          type: boolean
+          example: true
+        fechaCreacion:
+          type: string
+          format: date-time
+        fechaUltimaActualizacion:
+          type: string
+          format: date-time
+
+    Solicitud:
+      type: object
+      required:
+        - id
+        - solicitanteId
+        - tipoInsecto
+        - cantidad
+        - estado
+        - fechaCreacion
+      properties:
+        id:
+          type: integer
+          example: 1
+        solicitanteId:
+          type: integer
+          example: 1
+        solicitante:
+          type: string
+          example: Juan Pérez
+        tipoInsecto:
+          type: string
+          enum: [Coccinelida, Chrysopidae, Braconidae, Trichogrammatidae]
+          example: Coccinelida
+        cantidad:
+          type: integer
+          example: 500
+        estado:
+          type: string
+          enum: [PENDIENTE, APROBADO, ENTREGADO, RECHAZADO, RECIBIDO]
+          example: PENDIENTE
+        observaciones:
+          type: string
+          example: Para control de pulgón
+        fechaCreacion:
+          type: string
+          format: date-time
+        fechaAprobacion:
+          type: string
+          format: date-time
+        fechaEntrega:
+          type: string
+          format: date-time
+        fechaRecepcion:
+          type: string
+          format: date-time
+        aprobadoPor:
+          type: string
+          example: Admin User
+
+    SolicitudDetalle:
+      allOf:
+        - $ref: '#/components/schemas/Solicitud'
+        - type: object
+          properties:
+            historialEstados:
+              type: array
+              items:
+                type: object
+                properties:
+                  estado:
+                    type: string
+                  fecha:
+                    type: string
+                    format: date-time
+                  usuario:
+                    type: string
+                  motivo:
+                    type: string
+
+    StockItem:
+      type: object
+      properties:
+        tipoInsecto:
+          type: string
+          enum: [Coccinelida, Chrysopidae, Braconidae, Trichogrammatidae]
+          example: Coccinelida
+        cantidadDisponible:
+          type: integer
+          example: 5000
+        cantidadReservada:
+          type: integer
+          example: 1500
+        cantidadTotal:
+          type: integer
+          example: 6500
+        unidadMedida:
+          type: string
+          example: unidades
+        ultimaActualizacion:
+          type: string
+          format: date-time
+
+    AuditoriaLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        usuarioId:
+          type: integer
+        usuario:
+          type: string
+        tipoAccion:
+          type: string
+          example: CREAR_SOLICITUD
+        entidadTipo:
+          type: string
+          example: SOLICITUD
+        entidadId:
+          type: integer
+        resultado:
+          type: string
+          enum: [EXITOSO, ERROR]
+        detalles:
+          type: string
+        ipOrigen:
+          type: string
+        fechaAccion:
+          type: string
+          format: date-time
+
+    Error:
+      type: object
+      required:
+        - codigo
+        - mensaje
+      properties:
+        codigo:
+          type: string
+          example: VALIDATION_ERROR
+        mensaje:
+          type: string
+          example: Los datos proporcionados son inválidos
+        detalles:
+          type: array
+          items:
+            type: object
+            properties:
+              campo:
+                type: string
+              error:
+                type: string
+
+  # ==================== SEGURIDAD ====================
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT obtenido del endpoint `/auth/login` o `/auth/login/microsoft`.
+        
+        Formato: `Authorization: Bearer <tu_jwt_aqui>`
+
+  # ==================== RESPUESTAS COMUNES ====================
+  responses:
+    UnauthorizedError:
+      description: Token inválido, expirado o no proporcionado
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+            example:
+              codigo: UNAUTHORIZED
+              mensaje: Token inválido o expirado
+
+security:
+  - BearerAuth: []
